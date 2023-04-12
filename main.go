@@ -1,11 +1,11 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
+	"m3u8-download/util"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -25,8 +25,7 @@ var (
 	_output  = flag.String("output", "", "output dir.")
 	dataDir  = "output/"
 	wg       = &sync.WaitGroup{}
-	ch       chan int
-	urlQueue *queue
+	urlQueue *util.Queue
 )
 
 func main() {
@@ -53,7 +52,7 @@ func main() {
 		dataDir = *_output
 	}
 
-	if !PathExists(dataDir) {
+	if !util.PathExists(dataDir) {
 		os.MkdirAll(dataDir, os.ModePerm)
 	}
 
@@ -65,7 +64,7 @@ func main() {
 		}
 		body, _ := io.ReadAll(resp.Body)
 		tsList = string(body)
-	} else if PathExists(*_file) {
+	} else if util.PathExists(*_file) {
 		urlInfo, _ = url.Parse(*_host)
 		if urlInfo.Host == "" {
 			panic("file host empty")
@@ -78,7 +77,7 @@ func main() {
 	} else {
 		panic("Invalid data")
 	}
-	flagMatch, _ := regexp.MatchString("^#EXTM3U", tsList);
+	flagMatch, _ := regexp.MatchString("^#EXTM3U", tsList)
 	if !flagMatch {
 		panic("Invalid data")
 	}
@@ -91,8 +90,8 @@ func main() {
 	// 每行一个文件
 	lines := strings.Split(tsList, "\n")
 	// 队列，让所有协程竞争这个队列数据
-	urlQueue = &queue{
-		items: lines,
+	urlQueue = &util.Queue{
+		Items: lines,
 	}
 	// 创建协程
 	for i := 1; i <= coTotal; i++ {
@@ -104,7 +103,8 @@ func main() {
 	fmt.Println(">", "All goroutine done")
 	// 生成ffmpeg文件索引文件
 	mergeTxt := ""
-	for _, line := range lines {
+	// @todo 按照习惯，这里使用`lines`枚举更合理，但是这样会出现序列错乱问题。
+	for _, line := range strings.Split(tsList, "\n") {
 		filename := path.Base(line)
 		mergeTxt += "file '" + filename + "'\n"
 	}
@@ -117,13 +117,14 @@ func main() {
 // 协程函数
 func saveProc(urlInfo url.URL) {
 	id := rand.Intn(999999)
-	for urlQueue.length() > 0 {
+	for urlQueue.Length() > 0 {
 		tsName := strings.TrimSpace(urlQueue.Pop()) // 让每个协程每次下载一个ts文件
 		if tsName == "" {
 			return
 		}
-		tsUrl := urlUnparse(tsName, urlInfo)
-		result, _ := saveTsFile(tsUrl, tsName)
+		tsUrl := util.UrlUnparse(tsName, urlInfo)
+		filename := path.Base(tsName)
+		result, _ := util.SaveTsFile(tsUrl, dataDir+"/"+filename)
 		fmt.Println(">", id, tsUrl, result)
 		if !result {
 			urlQueue.Push(tsName)
@@ -131,116 +132,4 @@ func saveProc(urlInfo url.URL) {
 	}
 	//fmt.Println(id, "complete")
 	wg.Done()
-}
-
-// url合成
-func urlUnparse(filename string, urlInfo url.URL) string {
-	match, _ := regexp.MatchString("^http[s]*://", filename)
-	if match {
-		return filename
-	}
-	userpart := ""
-	if len(urlInfo.User.Username()) > 0 {
-		pwd, _ := urlInfo.User.Password()
-		userpart = urlInfo.User.Username() + "@" + pwd
-	}
-	if string(filename[0]) == "/" {
-		return urlInfo.Scheme + "://" + userpart + "" + urlInfo.Host + filename
-	}
-	return urlInfo.Scheme + "://" + userpart + "" + urlInfo.Host + path.Dir(urlInfo.Path) + "/" + filename
-}
-
-// 保存文件
-func saveTsFile(url string, filename string) (bool, error) {
-	resp, err := http.Get(url)
-	if err != nil {
-		return false, err
-	} else if resp.StatusCode != 200 {
-		return false, errors.New("HTTP CODE: " + fmt.Sprintf("%d", resp.StatusCode))
-	}
-	buffer, err := io.ReadAll(resp.Body)
-	if err != nil || len(buffer) <= 0 {
-		return false, errors.New("fail to read buffer ")
-	}
-	filename = path.Base(filename)
-	file, err := os.Create(dataDir + "/" + filename)
-	if err != nil {
-		return false, err
-	}
-	n, err := file.Write(buffer)
-	if err != nil || n <= 0 {
-		return false, errors.New("write fail")
-	}
-	return true, nil
-}
-
-// 判断路径是否存在
-func PathExists(path string) bool {
-	_, err := os.Stat(path)
-	if err == nil {
-		return true
-	} else if os.IsNotExist(err) {
-		return false
-	}
-	return false
-}
-
-// 队列
-type queue struct {
-	// 互斥锁
-	sync.Mutex
-	items []string
-}
-
-// 右入队列
-func (this *queue) Push(items ...string) bool {
-	this.Lock()
-	defer this.Unlock()
-	this.items = append(this.items, items...)
-	return true
-}
-
-// 左入队列
-func (this *queue) Unshift(items ...string) bool {
-	this.Lock()
-	defer this.Unlock()
-	readyItems := make([]string, len(items))
-	this.items = append(readyItems, this.items...)
-	return true
-}
-
-// 右出队列
-func (this *queue) Pop() string {
-	this.Lock()
-	defer this.Unlock()
-	if len(this.items) == 0 {
-		return ""
-	}
-	endIndex := len(this.items) - 1
-	rtn := this.items[endIndex]
-	this.items = this.items[:endIndex]
-	return rtn
-}
-
-// 左出队列
-func (this *queue) Shift() string {
-	this.Lock()
-	defer this.Unlock()
-	if len(this.items) == 0 {
-		return ""
-	}
-	rtn := this.items[0]
-	if len(this.items) > 1 {
-		this.items = this.items[1:]
-	} else {
-		this.items = []string{}
-	}
-	return rtn
-}
-
-// 队列长度
-func (this *queue) length() int {
-	this.Lock()
-	defer this.Unlock()
-	return len(this.items)
 }
