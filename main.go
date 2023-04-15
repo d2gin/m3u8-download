@@ -67,7 +67,7 @@ func main() {
 	} else if util.PathExists(*_file) {
 		urlInfo, _ = url.Parse(*_host)
 		if urlInfo.Host == "" {
-			panic("file host empty")
+			// panic("file host empty")
 		}
 		_bytes, err := os.ReadFile(*_file)
 		if err != nil {
