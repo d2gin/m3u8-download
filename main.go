@@ -6,10 +6,8 @@ import (
 	"io"
 	"io/fs"
 	"m3u8-download/util"
-	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +21,7 @@ var (
 	_host      = flag.String("host", "", "host prefix.")
 	_co        = flag.String("co", "", "goroutine total.")
 	_output    = flag.String("output", "", "output dir.")
+	_proxy     = flag.String("proxy", "", "proxy host")
 	dataDir    = "output/"
 	wg         = &sync.WaitGroup{}
 	urlQueue   *util.Queue
@@ -39,7 +38,7 @@ func main() {
 		pureContent  string
 		saveDir      string
 	)
-
+	util.G.Proxy = *_proxy
 	coTotal, err := strconv.Atoi(*_co)
 	if len(*_url) <= 0 && len(*_file) <= 0 {
 		panic("Parameters `url` and `file` cannot be both empty")
@@ -59,7 +58,13 @@ func main() {
 
 	if len(*_url) > 0 {
 		urlInfo, _ = url.Parse(*_url)
-		resp, err := http.Get(*_url)
+		req := &util.Request{
+			Header: map[string]string{
+				"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+			},
+			Proxy: util.G.Proxy,
+		}
+		resp, err := req.Do(*_url)
 		if err != nil {
 			panic(err)
 		}
@@ -84,15 +89,23 @@ func main() {
 		d := urlInfo.String()
 		d = strings.ReplaceAll(d, "/", "_")
 		d = strings.ReplaceAll(d, `\`, "_")
-		d = strings.ReplaceAll(d, `&`, "_")
-		d = strings.ReplaceAll(d, ` `, "_")
-		d = strings.ReplaceAll(d, `:`, "_")
+		d = strings.ReplaceAll(d, "&", "_")
+		d = strings.ReplaceAll(d, " ", "_")
+		d = strings.ReplaceAll(d, ":", "_")
+		d = strings.ReplaceAll(d, "?", "_")
+		d = strings.ReplaceAll(d, "*", "_")
+		d = strings.ReplaceAll(d, "|", "_")
+		d = strings.ReplaceAll(d, "<", "_")
+		d = strings.ReplaceAll(d, ">", "_")
 		return d
 	}()
 	// 创建文件夹
 	for _, d := range []string{dataDir, saveDir} {
 		if !util.PathExists(d) {
-			os.MkdirAll(d, os.ModePerm)
+			err := os.MkdirAll(d, os.ModePerm)
+			if err != nil {
+				panic(err)
+			}
 		}
 	}
 	flagMatch, _ := regexp.MatchString("^#EXTM3U", indexContent)
@@ -133,13 +146,25 @@ func main() {
 	mergeTxt := ""
 	// @todo 按照习惯，这里使用`lines`枚举更合理，但是这样会出现序列错乱问题。
 	for _, line := range strings.Split(pureContent, "\n") {
-		filename := path.Base(line)
+		filename := util.Basename(line)
 		mergeTxt += "file '" + filename + "'\n"
 	}
 	os.WriteFile(saveDir+"/merge.txt", []byte(mergeTxt), fs.ModePerm)
 	fmt.Println("")
 	fmt.Println(">", "Run the following command to generate an mp4 file:")
 	fmt.Println("ffmpeg -f concat -i " + strings.TrimSuffix(saveDir, "/") + "/merge.txt -c copy output-" + strconv.Itoa(int(time.Now().Unix())) + ".mp4")
+}
+
+func mergeScript(indexContent string, saveDir string) {
+	mergeTxt := ""
+	// 删除注释
+	indexContent = regexp.MustCompile("#.+\n*").ReplaceAllString(indexContent, "")
+	indexContent = strings.TrimSpace(indexContent)
+	for _, line := range strings.Split(indexContent, "\n") {
+		filename := util.Basename(line)
+		mergeTxt += "file '" + filename + "'\n"
+	}
+	os.WriteFile(saveDir+"/merge.txt", []byte(mergeTxt), fs.ModePerm)
 }
 
 // 协程函数
@@ -153,7 +178,7 @@ func saveProc(saveDir string, urlInfo url.URL) {
 			continue
 		}
 		tsUrl := util.UrlUnparse(tsName, urlInfo)
-		filename := path.Base(tsName)
+		filename := util.Basename(tsName)
 		result, _ := util.SaveTsFile(tsUrl, saveDir+"/"+filename)
 		//fmt.Println(">", id, tsUrl, result)
 		if !result {

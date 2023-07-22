@@ -16,6 +16,14 @@ import (
 	"strings"
 )
 
+type Global struct {
+	Proxy string
+}
+
+var G = &Global{
+	Proxy: "",
+}
+
 type Encryption struct {
 	Method string
 	Key    string
@@ -32,7 +40,7 @@ type M3U8Header struct {
 
 // UrlUnparse url合成
 func UrlUnparse(filename string, urlInfo url.URL) string {
-	match, _ := regexp.MatchString("^http[s]*://", filename)
+	match, _ := regexp.MatchString("^https*://", filename)
 	if match {
 		return filename
 	}
@@ -59,11 +67,17 @@ func PathExists(path string) bool {
 }
 
 // SaveTsFile 保存文件
-func SaveTsFile(url string, filepath string) (bool, error) {
+func SaveTsFile(_url string, filepath string) (bool, error) {
 	if PathExists(filepath) {
 		return true, nil
 	}
-	resp, err := http.Get(url)
+	req := &Request{
+		Header: map[string]string{
+			"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
+		},
+		Proxy: G.Proxy,
+	}
+	resp, err := req.Do(_url)
 	if err != nil {
 		return false, err
 	} else if resp.StatusCode != 200 {
@@ -82,6 +96,11 @@ func SaveTsFile(url string, filepath string) (bool, error) {
 		return false, errors.New("write fail")
 	}
 	return true, nil
+}
+
+func Basename(_url string) string {
+	u, _ := url.Parse(_url)
+	return path.Base(u.Path)
 }
 
 func ParseM3U8File(content string, indexUrl string) M3U8Header {
